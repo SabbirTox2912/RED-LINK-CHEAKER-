@@ -7,9 +7,15 @@ import requests
 from urllib.parse import urlparse
 import time
 
+# ১. টোকেন এবং এপিআই কি চেক
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
-bot = telebot.TeleBot(TOKEN)
+VT_API_KEY = os.environ.get('VT_API_KEY', '')
 
+if not TOKEN:
+    print("CRITICAL ERROR: TELEGRAM_TOKEN missing in Render Environment!")
+    exit(1)
+
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 @app.route('/')
@@ -21,23 +27,17 @@ def health():
     return "OK"
 
 CHANNEL_USERNAME = "RedTeamBDSecurityOperation"
-VT_API_KEY = os.environ.get('VT_API_KEY', '')
 
-# --- ডাটা স্টোরেজ (মেমোরিতে) ---
+# ২. ডাটা স্টোরেজ (মেমোরিতে)
 user_data = {} 
 ref_codes = {} 
 
-# --- প্রমো কোড সেটআপ ---
 PROMO_CODES = {
     "REDBD10A": 10, "REDBD10B": 10, "REDBD10C": 10, "REDBD10D": 10, "REDBD10E": 10,
     "REDBD10F": 10, "REDBD10G": 10, "REDBD10H": 10, "REDBD10I": 10, "REDBD10J": 10,
     "REDBD10K": 10, "REDBD10L": 10, "REDBD10M": 10, "REDBD10N": 10, "REDBD10O": 10
 }
-
-# ✅ প্রতি প্রমো কোড সর্বোচ্চ ১৫ জন ব্যবহার করতে পারবে
 PROMO_LIMIT = 15 
-
-# প্রমো কোডের ব্যবহারের কাউন্ট
 promo_usage = {code: 0 for code in PROMO_CODES}
 
 def get_user(user_id):
@@ -67,13 +67,13 @@ def check_link_safety(url):
             if res.status_code == 200:
                 stats = res.json()['data']['attributes']['stats']
                 if stats.get('malicious', 0) > 0 or stats.get('suspicious', 0) > 0:
-                    return False, f"⚠️ সতর্কতা! ক্ষতিকর লিংক।"
+                    return False, "⚠️ সতর্কতা! ক্ষতিকর লিংক।"
                 return True, "✅ লিংকটি নিরাপদ।"
         return None, "চেক করা যাচ্ছে না।"
     except Exception as e:
         return None, f"Error: {e}"
 
-# --- মূল মেনু ---
+# ৩. কমান্ড হ্যান্ডলার
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -128,7 +128,6 @@ def show_main_menu(message):
     )
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='Markdown')
 
-# --- SELECT LINK ---
 @bot.message_handler(func=lambda m: m.text == "1. SELECT LINK")
 def ask_for_link(message):
     msg = bot.reply_to(message, "🔗 অনুগ্রহ করে চেক করার লিংকটি পাঠান:")
@@ -144,7 +143,6 @@ def save_user_link(message):
     get_user(user_id)["links"]["saved"] = url
     bot.reply_to(message, f"✅ লিংক সেভ হয়েছে:\n`{url}`\n\nএবার '2. CHECK LINK' চাপুন।", parse_mode='Markdown')
 
-# --- CHECK LINK ---
 @bot.message_handler(func=lambda m: m.text == "2. CHECK LINK")
 def check_saved_link(message):
     user_id = message.from_user.id
@@ -174,7 +172,6 @@ def check_saved_link(message):
     else:
         bot.edit_message_text(f"❌ লিংক চেক করা যায়নি।\n\n💳 বাকি ক্রেডিট: {remaining}", chat_id=message.chat.id, message_id=status_msg.message_id, parse_mode='Markdown')
 
-# --- REFER ---
 @bot.message_handler(func=lambda m: m.text == "3. REFER & EARN")
 def refer_menu(message):
     user_id = message.from_user.id
@@ -193,13 +190,11 @@ def refer_menu(message):
     )
     bot.reply_to(message, text, parse_mode='Markdown')
 
-# --- MY CREDITS ---
 @bot.message_handler(func=lambda m: m.text == "4. MY CREDITS")
 def show_credits(message):
     user = get_user(message.from_user.id)
     bot.reply_to(message, f"💳 **আপনার ক্রেডিট**\n\nবর্তমান চেক পারমিশন: **{user['credits']}**\n\nরেফার বা প্রমো কোড ব্যবহার করে আরও ক্রেডিট পান।", parse_mode='Markdown')
 
-# --- PROMO CODE ---
 @bot.message_handler(func=lambda m: m.text == "5. PROMO CODE 🎉")
 def ask_promo(message):
     msg = bot.reply_to(message, "🎉 অনুগ্রহ করে আপনার প্রমো কোডটি লিখুন:")
@@ -229,11 +224,20 @@ def apply_promo(message):
     
     bot.reply_to(message, f"✅ **প্রমো কোড সফল!**\n\n🎁 আপনি পেয়েছেন **{reward}টি চেক পারমিশন**।\n💳 বর্তমান ক্রেডিট: {user['credits']}", parse_mode='Markdown')
 
+# ৪. বট চালু করা
 def run_bot():
-    print("Bot is running...")
-    bot.infinity_polling()
+    print("Bot is starting...")
+    while True:
+        try:
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        except Exception as e:
+            print(f"Restarting bot due to error: {e}")
+            time.sleep(5)
 
 if __name__ == "__main__":
+    # থ্রেডে বট চালু
     threading.Thread(target=run_bot, daemon=True).start()
+    
+    # Render-এর জন্য Flask সার্ভার
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
