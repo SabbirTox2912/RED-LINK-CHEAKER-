@@ -7,12 +7,12 @@ import requests
 from urllib.parse import urlparse
 import time
 
-# ১. টোকেন এবং এপিআই কি চেক
+# টোকেন এবং এপিআই কি
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 VT_API_KEY = os.environ.get('VT_API_KEY', '')
 
 if not TOKEN:
-    print("CRITICAL ERROR: TELEGRAM_TOKEN missing in Render Environment!")
+    print("CRITICAL ERROR: TELEGRAM_TOKEN missing!")
     exit(1)
 
 bot = telebot.TeleBot(TOKEN)
@@ -28,7 +28,7 @@ def health():
 
 CHANNEL_USERNAME = "RedTeamBDSecurityOperation"
 
-# ২. ডাটা স্টোরেজ (মেমোরিতে)
+# ডাটা স্টোরেজ
 user_data = {} 
 ref_codes = {} 
 
@@ -39,6 +39,9 @@ PROMO_CODES = {
 }
 PROMO_LIMIT = 15 
 promo_usage = {code: 0 for code in PROMO_CODES}
+
+# সন্দেহজনক শব্দ
+SUSPICIOUS_WORDS = ["login", "verify", "update", "secure", "account", "bank", "free", "gift", "prize", "bonus", "id=", "token", "wallet"]
 
 def get_user(user_id):
     if user_id not in user_data:
@@ -53,27 +56,65 @@ def is_user_member(user_id):
         return False
 
 def check_link_safety(url):
-    if not VT_API_KEY:
-        return None, "API Key নেই।"
-    try:
-        scan_url = "https://www.virustotal.com/api/v3/urls"
-        headers = {"x-apikey": VT_API_KEY}
-        files = {"url": (None, url)}
-        response = requests.post(scan_url, headers=headers, files=files, timeout=15)
-        if response.status_code == 200:
-            analysis_id = response.json()['data']['id']
-            time.sleep(3)
-            res = requests.get(f"https://www.virustotal.com/api/v3/analyses/{analysis_id}", headers=headers, timeout=15)
-            if res.status_code == 200:
-                stats = res.json()['data']['attributes']['stats']
-                if stats.get('malicious', 0) > 0 or stats.get('suspicious', 0) > 0:
-                    return False, "⚠️ সতর্কতা! ক্ষতিকর লিংক।"
-                return True, "✅ লিংকটি নিরাপদ।"
-        return None, "চেক করা যাচ্ছে না।"
-    except Exception as e:
-        return None, f"Error: {e}"
+    """লিংকের গঠন এবং VirusTotal API চেক করা"""
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    reasons = []
+    
+    # ১. HTTPS চেক
+    if parsed.scheme != "https":
+        reasons.append("❌ লিংকটি সিকিউর নয় (HTTP)। ডাটা চুরি হতে পারে।")
+    
+    # ২. সন্দেহজনক শব্দ চেক
+    url_lower = url.lower()
+    for word in SUSPICIOUS_WORDS:
+        if word in url_lower:
+            reasons.append(f"⚠️ সন্দেহজনক শব্দ পাওয়া গেছে: '{word}'")
+            break
+            
+    # ৩. সন্দেহজনক ডোমেইন এক্সটেনশন
+    if any(ext in domain for ext in [".xyz", ".top", ".club", ".online", ".site", ".tk"]):
+        reasons.append(f"⚠️ সন্দেহজনক ডোমেইন: {domain}")
+        
+    # ৪. ভুল ফরম্যাট
+    if not domain or domain == "":
+        reasons.append("❌ ভুল বা অসম্পূর্ণ লিংক।")
 
-# ৩. কমান্ড হ্যান্ডলার
+    # VirusTotal API চেক
+    vt_status = None
+    vt_msg = ""
+    if VT_API_KEY:
+        try:
+            scan_url = "https://www.virustotal.com/api/v3/urls"
+            headers = {"x-apikey": VT_API_KEY}
+            files = {"url": (None, url)}
+            response = requests.post(scan_url, headers=headers, files=files, timeout=10)
+            if response.status_code == 200:
+                analysis_id = response.json()['data']['id']
+                time.sleep(2)
+                res = requests.get(f"https://www.virustotal.com/api/v3/analyses/{analysis_id}", headers=headers, timeout=10)
+                if res.status_code == 200:
+                    stats = res.json()['data']['attributes']['stats']
+                    malicious = stats.get('malicious', 0)
+                    suspicious = stats.get('suspicious', 0)
+                    if malicious > 0 or suspicious > 0:
+                        reasons.append(f"🚨 VirusTotal: {malicious} malicious, {suspicious} suspicious সনাক্ত করা হয়েছে।")
+                        vt_status = False
+                    else:
+                        vt_msg = "✅ VirusTotal ডাটাবেসে কোনো ভাইরাস পাওয়া যায়নি।"
+                        vt_status = True
+        except:
+            vt_msg = "⚠️ VirusTotal চেক করা যাচ্ছে না।"
+
+    # চূড়ান্ত ফলাফল
+    if reasons:
+        return False, "\n".join(reasons) + "\n" + vt_msg
+    elif vt_status is True:
+        return True, f"✅ লিংকটি নিরাপদ বলে মনে হচ্ছে।\n{vt_msg}"
+    else:
+        return None, f"⚠️ লিংকটি সম্পর্কে নিশ্চিত হওয়া যাচ্ছে না।\n{vt_msg}"
+
+# --- কমান্ড হ্যান্ডলার ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -224,20 +265,16 @@ def apply_promo(message):
     
     bot.reply_to(message, f"✅ **প্রমো কোড সফল!**\n\n🎁 আপনি পেয়েছেন **{reward}টি চেক পারমিশন**।\n💳 বর্তমান ক্রেডিট: {user['credits']}", parse_mode='Markdown')
 
-# ৪. বট চালু করা
 def run_bot():
-    print("Bot is starting...")
+    print("Bot is running...")
     while True:
         try:
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
-            print(f"Restarting bot due to error: {e}")
+            print(f"Restarting bot: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
-    # থ্রেডে বট চালু
     threading.Thread(target=run_bot, daemon=True).start()
-    
-    # Render-এর জন্য Flask সার্ভার
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
